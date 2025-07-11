@@ -464,42 +464,42 @@ pop_ip = str(response.answer[0][0])  # 获得该区域最优的CloudFront节点
 graph TB
     subgraph "配置方式对比"
         subgraph "直接POP预热配置"
-            POPConfig["pops:<br/>- 'IAD89-C1'<br/>- 'NRT20-P2'<br/>- 'LHR61-C2'"]
-            POPConfig --> POPLogic[pop.count('-') == 1<br/>判断为POP节点]
-            POPLogic --> POPResolve[直接解析:<br/>cf_id.IAD89-C1.cloudfront.net]
+            POPConfig["pops:<br/>- IAD89-C1<br/>- NRT20-P2<br/>- LHR61-C2"]
+            POPConfig --> POPLogic["包含连字符的格式<br/>判断为POP节点"]
+            POPLogic --> POPResolve["直接解析POP域名<br/>cf_id.IAD89-C1.cloudfront.net"]
         end
         
         subgraph "区域预热配置"
-            RegionConfig["pops:<br/>- 'us-east-1'<br/>- 'ap-northeast-1'<br/>- 'eu-west-1'"]
-            RegionConfig --> RegionLogic[AWS区域格式<br/>智能节点选择]
-            RegionLogic --> RegionResolve[EDNS查询:<br/>模拟地理位置获取最优节点]
+            RegionConfig["pops:<br/>- us-east-1<br/>- ap-northeast-1<br/>- eu-west-1"]
+            RegionConfig --> RegionLogic["AWS区域格式<br/>智能节点选择"]
+            RegionLogic --> RegionResolve["EDNS查询<br/>模拟地理位置获取最优节点"]
         end
     end
     
     subgraph "预热效果对比"
         subgraph "直接POP预热效果"
-            POPResolve --> POPTarget[精确预热指定POP节点]
-            POPTarget --> POPResult[确定效果:<br/>✅ 该POP节点缓存内容<br/>❓ 可能通过缓存协调影响区域缓存<br/>⚠️ 仅服务该POP覆盖区域]
+            POPResolve --> POPTarget["精确预热指定POP节点"]
+            POPTarget --> POPResult["确定效果:<br/>该POP节点缓存内容<br/>可能通过缓存协调影响区域缓存<br/>仅服务该POP覆盖区域"]
         end
         
         subgraph "区域预热效果"
-            RegionResolve --> RegionTarget{EDNS返回节点类型}
-            RegionTarget -->|返回区域缓存节点| RegionalCache[预热区域二级缓存]
-            RegionTarget -->|返回边缘POP节点| EdgePOP[预热边缘POP节点]
+            RegionResolve --> RegionTarget{"EDNS返回节点类型"}
+            RegionTarget -->|返回区域缓存节点| RegionalCache["预热区域二级缓存"]
+            RegionTarget -->|返回边缘POP节点| EdgePOP["预热边缘POP节点"]
             
-            RegionalCache --> RegionalResult[广泛效果:<br/>✅ 区域缓存存储内容<br/>✅ 服务该区域所有POP<br/>✅ 最大化预热效率]
+            RegionalCache --> RegionalResult["广泛效果:<br/>区域缓存存储内容<br/>服务该区域所有POP<br/>最大化预热效率"]
             
-            EdgePOP --> EdgeResult[中等效果:<br/>✅ 边缘POP缓存内容<br/>🔄 与区域缓存协调工作<br/>⚡ 智能选择的最优节点]
+            EdgePOP --> EdgeResult["中等效果:<br/>边缘POP缓存内容<br/>与区域缓存协调工作<br/>智能选择的最优节点"]
         end
     end
     
     subgraph "适用场景对比"
         subgraph "直接POP适用场景"
-            POPScenario["🎯 精确控制特定节点<br/>🔧 测试特定POP性能<br/>🏢 已知用户集中的POP<br/>🚨 紧急修复特定节点"]
+            POPScenario["精确控制特定节点<br/>测试特定POP性能<br/>已知用户集中的POP<br/>紧急修复特定节点"]
         end
         
         subgraph "区域预热适用场景"
-            RegionScenario["🌍 全球业务预热<br/>📈 最大化缓存覆盖<br/>🤖 智能节点选择<br/>⚡ 高效预热策略"]
+            RegionScenario["全球业务预热<br/>最大化缓存覆盖<br/>智能节点选择<br/>高效预热策略"]
         end
     end
     
@@ -527,21 +527,21 @@ graph TB
 
 ```mermaid
 flowchart TD
-    Start[选择预热方式] --> Purpose{预热目的}
+    Start["选择预热方式"] --> Purpose{"预热目的"}
     
-    Purpose -->|全球业务优化| GlobalBusiness[推荐: 区域预热]
-    Purpose -->|特定节点控制| SpecificControl[考虑: 直接POP预热]
-    Purpose -->|测试验证| Testing[两种方式结合]
+    Purpose -->|全球业务优化| GlobalBusiness["推荐: 区域预热"]
+    Purpose -->|特定节点控制| SpecificControl["考虑: 直接POP预热"]
+    Purpose -->|测试验证| Testing["两种方式结合"]
     
-    GlobalBusiness --> RegionBenefits["优势:<br/>• 智能节点选择<br/>• 最大化覆盖范围<br/>• 自动适应变化<br/>• 维护成本低"]
+    GlobalBusiness --> RegionBenefits["优势:<br/>智能节点选择<br/>最大化覆盖范围<br/>自动适应变化<br/>维护成本低"]
     
-    SpecificControl --> POPBenefits["优势:<br/>• 精确控制<br/>• 可预测结果<br/>• 适合特定场景"]
+    SpecificControl --> POPBenefits["优势:<br/>精确控制<br/>可预测结果<br/>适合特定场景"]
     
-    Testing --> CombinedBenefits["优势:<br/>• 全面验证效果<br/>• 对比不同策略<br/>• 最佳实践探索"]
+    Testing --> CombinedBenefits["优势:<br/>全面验证效果<br/>对比不同策略<br/>最佳实践探索"]
     
-    RegionBenefits --> Recommendation1[建议配置:<br/>主要区域 + 关键市场]
-    POPBenefits --> Recommendation2[建议配置:<br/>已知高流量POP节点]
-    CombinedBenefits --> Recommendation3[建议配置:<br/>区域预热为主 + POP补充]
+    RegionBenefits --> Recommendation1["建议配置:<br/>主要区域 + 关键市场"]
+    POPBenefits --> Recommendation2["建议配置:<br/>已知高流量POP节点"]
+    CombinedBenefits --> Recommendation3["建议配置:<br/>区域预热为主 + POP补充"]
     
     style GlobalBusiness fill:#e1f5fe
     style RegionBenefits fill:#c8e6c9
@@ -642,13 +642,13 @@ graph TD
 基于AWS官方文档的缓存协调机制，直接预热边缘POP节点：
 
 **确定的效果**：
-- ✅ 该特定POP节点会缓存内容
-- ✅ 从该POP访问的用户会获得缓存命中
+- 该特定POP节点会缓存内容
+- 从该POP访问的用户会获得缓存命中
 
 **可能的协调效果**（基于AWS缓存一致性）：
-- 🔄 由于缓存系统的协调性，可能对区域缓存产生间接影响
-- 🔄 其他POP请求相同内容时，可能从缓存系统中获益
-- 🔄 缓存失效时会同步清除两级缓存，暗示存在某种协调机制
+- 由于缓存系统的协调性，可能对区域缓存产生间接影响
+- 其他POP请求相同内容时，可能从缓存系统中获益
+- 缓存失效时会同步清除两级缓存，暗示存在某种协调机制
 
 **重要说明**：
 - Region方式通过EDNS查询**只返回一个最优节点IP**
