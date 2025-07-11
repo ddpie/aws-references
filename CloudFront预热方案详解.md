@@ -202,8 +202,8 @@ files: |
   /static/js/main.js
   /static/css/style.css
   /images/banner.jpg
-  # 中文文件需要URL编码
-  /%E4%B8%AD%E6%96%87%E6%96%87%E4%BB%B6.pdf
+  # 特殊字符文件需要URL编码
+  /docs/user%20guide.pdf
 
 # 压缩编码策略
 encodings:
@@ -388,8 +388,8 @@ flowchart TD
 ```mermaid
 graph TB
     subgraph "传统DNS解析"
-        User1[北京用户] --> LocalDNS1[北京DNS服务器]
-        User2[上海用户] --> LocalDNS2[上海DNS服务器]
+        User1[纽约用户] --> LocalDNS1[纽约DNS服务器]
+        User2[伦敦用户] --> LocalDNS2[伦敦DNS服务器]
         LocalDNS1 --> AuthDNS[CloudFront权威DNS]
         LocalDNS2 --> AuthDNS
         AuthDNS --> RandomNode[返回随机节点]
@@ -401,13 +401,13 @@ graph TB
 ```mermaid
 graph TB
     subgraph "EDNS智能解析"
-        User1[北京用户] --> EDNS1[EDNS查询 + 北京子网信息]
-        User2[上海用户] --> EDNS2[EDNS查询 + 上海子网信息]
+        User1[纽约用户] --> EDNS1[EDNS查询 + 纽约子网信息]
+        User2[伦敦用户] --> EDNS2[EDNS查询 + 伦敦子网信息]
         EDNS1 --> AuthDNS[CloudFront权威DNS]
         EDNS2 --> AuthDNS
         AuthDNS --> GeoLogic[地理位置智能判断]
-        GeoLogic --> OptimalNode1[返回北京最优节点]
-        GeoLogic --> OptimalNode2[返回上海最优节点]
+        GeoLogic --> OptimalNode1[返回纽约最优节点]
+        GeoLogic --> OptimalNode2[返回伦敦最优节点]
     end
 ```
 
