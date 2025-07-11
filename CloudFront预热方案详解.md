@@ -23,9 +23,9 @@ graph TB
     end
     
     subgraph "区域二级缓存"
-        Regional1[us-east-1<br/>北美区域缓存]
-        Regional2[eu-west-1<br/>欧洲区域缓存]
-        Regional3[ap-southeast-1<br/>亚太区域缓存]
+        Regional1[北美区域缓存<br/>服务北美地区]
+        Regional2[欧洲区域缓存<br/>服务欧洲地区]
+        Regional3[亚太区域缓存<br/>服务亚太地区]
     end
     
     Edge1 --> Regional1
@@ -40,15 +40,28 @@ sequenceDiagram
     participant Tool as 预热工具
     participant DNS as Google DNS
     participant CF as CloudFront节点
+    participant REC as 区域二级缓存
     participant Origin as 源站
     
     Tool->>DNS: EDNS查询(带地理位置)
-    DNS->>Tool: 返回最优POP节点IP
+    DNS->>Tool: 返回最优节点IP
     Tool->>CF: 直接请求目标文件
-    CF->>Origin: 回源获取内容(如果缓存未命中)
-    Origin->>CF: 返回文件内容
-    CF->>Tool: 返回内容并缓存
-    CF->>CF: 内容已缓存到节点
+    
+    alt 如果是边缘POP节点
+        CF->>REC: 检查区域缓存(如果POP未命中)
+        alt 区域缓存未命中
+            REC->>Origin: 回源获取内容
+            Origin->>REC: 返回文件内容
+            REC->>CF: 转发内容并缓存到区域
+        else 区域缓存命中
+            REC->>CF: 返回缓存内容
+        end
+        CF->>Tool: 返回内容并缓存到POP
+    else 如果是区域缓存节点
+        CF->>Origin: 回源获取内容(如果缓存未命中)
+        Origin->>CF: 返回文件内容
+        CF->>Tool: 返回内容并缓存到区域缓存
+    end
 ```
 
 ## 核心技术特性
@@ -250,6 +263,11 @@ pops:
   - "ap-south-1"     # 印度市场
 ```
 
+**重要说明**：
+- 上述AWS区域用于EDNS查询中的地理位置模拟
+- CloudFront的区域二级缓存位置由AWS内部管理，不直接对应AWS区域
+- 通过模拟来自特定AWS区域的请求，可以获得该地理区域的最优CloudFront节点
+
 #### 区域选择决策树
 
 ```mermaid
@@ -276,24 +294,38 @@ flowchart TD
 
 | 客户端类型 | 推荐编码 | 原因 |
 |------------|----------|------|
-| 现代浏览器 | `"gzip, br"` | 最佳压缩率，减少传输时间 |
-| 移动端应用 | `"br"` | 节省移动流量，提升加载速度 |
+| 现代浏览器(HTTPS) | `"gzip, br"` | 最佳压缩率，Chrome/Firefox仅在HTTPS下支持br |
+| 现代浏览器(HTTP) | `"gzip"` | HTTP下浏览器不支持brotli压缩 |
+| 移动端应用(HTTPS) | `"br"` | 节省移动流量，提升加载速度 |
 | 旧版浏览器 | `"gzip"` | 广泛兼容性支持 |
 | API客户端 | `""` | 避免解压开销，直接使用 |
 | 混合场景 | 全部配置 | 覆盖所有可能的客户端 |
+
+**重要提示**（基于AWS官方文档）：
+- Chrome和Firefox浏览器仅在HTTPS请求时支持Brotli压缩
+- HTTP请求不支持Brotli，会自动降级到gzip或无压缩
+- CloudFront在支持两种压缩格式时优先选择Brotli
 
 #### 编码优先级策略
 
 ```mermaid
 graph LR
-    Request[客户端请求] --> Check{支持的编码}
-    Check -->|支持br| Brotli[返回Brotli压缩]
-    Check -->|仅支持gzip| Gzip[返回Gzip压缩]
-    Check -->|不支持压缩| Raw[返回原始内容]
+    Request[客户端请求] --> Protocol{请求协议}
+    Protocol -->|HTTPS| HTTPSCheck{支持的编码}
+    Protocol -->|HTTP| HTTPCheck{支持的编码}
+    
+    HTTPSCheck -->|支持br+gzip| Brotli[返回Brotli压缩<br/>优先选择]
+    HTTPSCheck -->|仅支持gzip| Gzip1[返回Gzip压缩]
+    HTTPSCheck -->|不支持压缩| Raw1[返回原始内容]
+    
+    HTTPCheck -->|支持gzip| Gzip2[返回Gzip压缩<br/>br不可用]
+    HTTPCheck -->|不支持压缩| Raw2[返回原始内容]
     
     Brotli --> Cache1[缓存br版本]
-    Gzip --> Cache2[缓存gzip版本]
-    Raw --> Cache3[缓存原始版本]
+    Gzip1 --> Cache2[缓存gzip版本]
+    Gzip2 --> Cache3[缓存gzip版本]
+    Raw1 --> Cache4[缓存原始版本]
+    Raw2 --> Cache5[缓存原始版本]
 ```
 
 ### 3. 文件预热优先级
@@ -426,7 +458,97 @@ response = dns_query_with_subnet(
 pop_ip = str(response.answer[0][0])  # 获得该区域最优的CloudFront节点
 ```
 
-#### 2. 智能节点选择优势
+#### 2. 直接POP预热 vs 区域预热详细对比
+
+```mermaid
+graph TB
+    subgraph "配置方式对比"
+        subgraph "直接POP预热配置"
+            POPConfig["pops:<br/>- 'IAD89-C1'<br/>- 'NRT20-P2'<br/>- 'LHR61-C2'"]
+            POPConfig --> POPLogic[pop.count('-') == 1<br/>判断为POP节点]
+            POPLogic --> POPResolve[直接解析:<br/>cf_id.IAD89-C1.cloudfront.net]
+        end
+        
+        subgraph "区域预热配置"
+            RegionConfig["pops:<br/>- 'us-east-1'<br/>- 'ap-northeast-1'<br/>- 'eu-west-1'"]
+            RegionConfig --> RegionLogic[AWS区域格式<br/>智能节点选择]
+            RegionLogic --> RegionResolve[EDNS查询:<br/>模拟地理位置获取最优节点]
+        end
+    end
+    
+    subgraph "预热效果对比"
+        subgraph "直接POP预热效果"
+            POPResolve --> POPTarget[精确预热指定POP节点]
+            POPTarget --> POPResult[确定效果:<br/>✅ 该POP节点缓存内容<br/>❓ 可能通过缓存协调影响区域缓存<br/>⚠️ 仅服务该POP覆盖区域]
+        end
+        
+        subgraph "区域预热效果"
+            RegionResolve --> RegionTarget{EDNS返回节点类型}
+            RegionTarget -->|返回区域缓存节点| RegionalCache[预热区域二级缓存]
+            RegionTarget -->|返回边缘POP节点| EdgePOP[预热边缘POP节点]
+            
+            RegionalCache --> RegionalResult[广泛效果:<br/>✅ 区域缓存存储内容<br/>✅ 服务该区域所有POP<br/>✅ 最大化预热效率]
+            
+            EdgePOP --> EdgeResult[中等效果:<br/>✅ 边缘POP缓存内容<br/>🔄 与区域缓存协调工作<br/>⚡ 智能选择的最优节点]
+        end
+    end
+    
+    subgraph "适用场景对比"
+        subgraph "直接POP适用场景"
+            POPScenario["🎯 精确控制特定节点<br/>🔧 测试特定POP性能<br/>🏢 已知用户集中的POP<br/>🚨 紧急修复特定节点"]
+        end
+        
+        subgraph "区域预热适用场景"
+            RegionScenario["🌍 全球业务预热<br/>📈 最大化缓存覆盖<br/>🤖 智能节点选择<br/>⚡ 高效预热策略"]
+        end
+    end
+    
+    style RegionalResult fill:#c8e6c9
+    style RegionalCache fill:#e1f5fe
+    style POPResult fill:#fff3e0
+    style RegionScenario fill:#e8f5e8
+    style POPScenario fill:#fef7e0
+```
+
+#### 技术实现差异
+
+| 对比维度 | 直接POP预热 | 区域预热 |
+|----------|-------------|----------|
+| **配置格式** | `"IAD89-C1"` | `"us-east-1"` |
+| **节点识别** | `pop.count('-') == 1` | AWS区域格式 |
+| **DNS解析** | 直接解析POP域名 | EDNS Client Subnet查询 |
+| **预热精度** | 精确到特定POP | CloudFront智能选择 |
+| **覆盖范围** | 单个POP节点 | 可能覆盖区域缓存 |
+| **维护成本** | 需要维护POP列表 | 使用稳定的AWS区域 |
+| **适应性** | 固定节点，可能过时 | 自动适应网络变化 |
+| **预热效率** | 针对性强但范围有限 | 智能化且覆盖面广 |
+
+#### 选择建议
+
+```mermaid
+flowchart TD
+    Start[选择预热方式] --> Purpose{预热目的}
+    
+    Purpose -->|全球业务优化| GlobalBusiness[推荐: 区域预热]
+    Purpose -->|特定节点控制| SpecificControl[考虑: 直接POP预热]
+    Purpose -->|测试验证| Testing[两种方式结合]
+    
+    GlobalBusiness --> RegionBenefits["优势:<br/>• 智能节点选择<br/>• 最大化覆盖范围<br/>• 自动适应变化<br/>• 维护成本低"]
+    
+    SpecificControl --> POPBenefits["优势:<br/>• 精确控制<br/>• 可预测结果<br/>• 适合特定场景"]
+    
+    Testing --> CombinedBenefits["优势:<br/>• 全面验证效果<br/>• 对比不同策略<br/>• 最佳实践探索"]
+    
+    RegionBenefits --> Recommendation1[建议配置:<br/>主要区域 + 关键市场]
+    POPBenefits --> Recommendation2[建议配置:<br/>已知高流量POP节点]
+    CombinedBenefits --> Recommendation3[建议配置:<br/>区域预热为主 + POP补充]
+    
+    style GlobalBusiness fill:#e1f5fe
+    style RegionBenefits fill:#c8e6c9
+    style Recommendation1 fill:#e8f5e8
+```
+
+#### 3. 智能节点选择优势
 
 **传统POP方式的局限性**：
 ```python
@@ -485,27 +607,91 @@ graph TB
 
 ### 预热范围深度分析
 
+#### 基于AWS官方文档的缓存机制
+
+**AWS官方确认的缓存工作流程**：
+1. 用户请求首先到达最近的边缘POP
+2. 如果POP缓存未命中，会查询区域二级缓存
+3. 如果区域缓存也未命中，才会回源获取内容
+4. 内容会同时缓存到区域缓存和POP中
+
+**重要发现**（AWS官方文档明确说明）：
+> "Regional edge caches have feature parity with POPs. For example, a cache invalidation request removes an object from both POP caches and regional edge caches before it expires."
+
+这表明缓存系统是协调工作的，具有一致性保证。
+
 #### Region方式预热的实际范围
 
 ```mermaid
 graph TD
     RegionConfig[配置: us-east-1] --> DNSQuery[EDNS地理查询]
-    DNSQuery --> NodeSelection{CloudFront节点选择}
+    DNSQuery --> NodeSelection{CloudFront智能节点选择}
     
     NodeSelection -->|情况1| RegionalEdge[区域二级缓存节点]
-    NodeSelection -->|情况2| LocalPOP[本地边缘POP节点]
+    NodeSelection -->|情况2| LocalPOP[边缘POP节点]
     
-    RegionalEdge --> WideImpact[影响整个区域的多个POP]
-    LocalPOP --> LimitedImpact[仅影响单个POP节点]
+    RegionalEdge --> WideImpact[服务该区域的所有POP<br/>基于AWS缓存架构]
+    LocalPOP --> CoordinatedCache[与区域缓存协调工作<br/>基于AWS缓存一致性]
     
     WideImpact --> HighEfficiency[预热效率高]
-    LimitedImpact --> LowEfficiency[预热效率相对较低]
+    CoordinatedCache --> ModerateEfficiency[预热效率中等]
 ```
 
+#### 直接POP预热的潜在效果
+
+基于AWS官方文档的缓存协调机制，直接预热边缘POP节点：
+
+**确定的效果**：
+- ✅ 该特定POP节点会缓存内容
+- ✅ 从该POP访问的用户会获得缓存命中
+
+**可能的协调效果**（基于AWS缓存一致性）：
+- 🔄 由于缓存系统的协调性，可能对区域缓存产生间接影响
+- 🔄 其他POP请求相同内容时，可能从缓存系统中获益
+- 🔄 缓存失效时会同步清除两级缓存，暗示存在某种协调机制
+
 **重要说明**：
-- Region方式**不会预热区域内所有POP节点**
-- 每次查询只返回**一个最优节点IP**
-- 预热效果取决于返回的是区域二级缓存还是边缘POP
+- Region方式通过EDNS查询**只返回一个最优节点IP**
+- 预热效果取决于返回的节点类型（区域缓存 vs 边缘POP）
+- AWS的缓存架构确保了两级缓存的协调工作
+
+#### CloudFront缓存层级与预热传播
+
+```mermaid
+graph TB
+    subgraph "预热方式对比"
+        subgraph "Region方式预热"
+            RegionPrewarm[Region预热请求] --> EDNSResult{EDNS返回节点类型}
+            EDNSResult -->|返回区域缓存| RegionalNode[区域二级缓存节点]
+            EDNSResult -->|返回边缘POP| EdgeNode[边缘POP节点]
+            
+            RegionalNode --> RegionalCache[内容缓存到区域缓存]
+            EdgeNode --> EdgeCache[内容缓存到边缘POP]
+            
+            RegionalCache --> ServeMultiplePOPs[服务该区域多个POP]
+            EdgeCache --> ServeLocalUsers[服务本地用户]
+        end
+        
+        subgraph "直接POP预热"
+            DirectPrewarm[直接POP预热] --> SpecificPOP[特定POP节点]
+            SpecificPOP --> DirectCache[内容缓存到该POP]
+            DirectCache --> LimitedServe[仅服务该POP用户]
+        end
+    end
+    
+    subgraph "用户访问流程"
+        User[用户请求] --> NearestPOP[最近的POP节点]
+        NearestPOP -->|缓存命中| DirectReturn[直接返回]
+        NearestPOP -->|缓存未命中| CheckRegional[查询区域缓存]
+        CheckRegional -->|区域缓存命中| RegionalReturn[从区域缓存获取]
+        CheckRegional -->|区域缓存未命中| OriginFetch[回源获取]
+    end
+    
+    style RegionalCache fill:#e1f5fe
+    style ServeMultiplePOPs fill:#c8e6c9
+    style DirectCache fill:#fff3e0
+    style LimitedServe fill:#ffecb3
+```
 
 ## 性能优化与监控
 
@@ -563,6 +749,16 @@ SIZE:1.2MB/1.2MB etag:"abc123" cf-id:xyz789 X-Cache:Miss from cloudfront
 | **SIZE** | 下载大小 | 完整文件大小 |
 | **RECEIVED** | 实际编码 | 与请求编码匹配 |
 | **cf-id** | CloudFront请求ID | 非空值 |
+
+**X-Cache头说明**：
+- `Miss from cloudfront`：内容不在缓存中，已从源站获取并缓存（预热成功）
+- `Hit from cloudfront`：内容已在缓存中，直接返回（缓存命中）
+- `RefreshHit from cloudfront`：缓存内容已过期，重新验证后返回
+
+**其他重要响应头**：
+- `X-Amz-Cf-Id`：CloudFront请求唯一标识符
+- `X-Amz-Cf-Pop`：处理请求的CloudFront POP节点标识
+- `Content-Encoding`：实际返回的压缩编码格式
 
 ### 故障排除指南
 
@@ -659,6 +855,34 @@ def monitor_prewarm_results():
         ]
     )
 ```
+
+### 技术限制与注意事项
+
+#### CloudFront缓存行为限制
+
+**基于AWS官方文档的重要限制**：
+
+1. **区域二级缓存跳过情况**：
+   - 当源站是S3且与区域缓存在同一AWS区域时，POP会跳过区域缓存直接访问S3
+   - 动态请求不会通过区域缓存，直接到达源站
+   - 代理HTTP方法（PUT、POST、PATCH等）直接从POP到源站
+
+2. **压缩限制**：
+   - HTTP/1.0请求不支持压缩
+   - 已缓存的内容在启用压缩后不会自动重新压缩，需要invalidation
+   - Brotli压缩需要使用缓存策略，不支持传统缓存设置
+
+3. **预热效果限制**：
+   - 预热只影响被请求的特定节点
+   - 不同编码格式的内容会分别缓存
+   - 缓存的第一个版本会持续服务，直到过期或失效
+
+#### 最佳实践建议
+
+- **协议选择**：优先使用HTTPS以获得完整的压缩支持
+- **缓存策略**：使用现代缓存策略而非传统设置
+- **监控验证**：通过响应头验证预热效果
+- **分批预热**：大量文件分批预热，避免源站压力过大
 
 ## 总结
 
